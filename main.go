@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -12,12 +15,19 @@ import (
 )
 
 ///******************* Only Admins can use this robot *************************////
+// only admins can vote
+// hyperlink
+// trace polls
+// forward message from specific channel
+// get admin counts
 
 // var token = os.Getenv("BotToken")
 // var botID = os.Getenv("BotID")
+// var chanID = os.Getenv("ChatID")
 
 var token = "1635980318:AAE0P8JTY5DSPiFEgOlqGKvO4EWq314dZlA"
 var botID = "@simorgh_consensus_bot"
+var chanID = "@simorgh_consensus_channel"
 
 // var messagesUnderVote = []int64{}
 // should be map
@@ -54,6 +64,12 @@ type PollOption struct {
 	VoterCount uint   `json:"voter_count"`
 }
 
+type PollAnswer struct {
+	PollID    string  `json:"poll_id"`
+	User      User    `json:"user"`
+	OptionIDs []int64 `json:"option_ids"`
+}
+
 type SendPollReqBody struct {
 	ChatID      int64    `json:"chat_id"`
 	Question    string   `json:"question"`
@@ -72,10 +88,21 @@ type User struct {
 }
 
 type ChatMember struct {
-	Ok bool `json:"ok"`
+	Ok     bool `json:"ok"`
 	Result struct {
 		User   User   `json:"user"`
 		Status string `json:"status"`
+	} `json:"result"`
+}
+
+type PollMessageRes struct {
+	Ok     bool `json:"ok"`
+	Result struct {
+		MessageID int64 `json:"message_id"`
+		Chat      struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+		User User `json:"from"`
 	} `json:"result"`
 }
 
@@ -120,13 +147,17 @@ func CreateVote(rb *webhookReqBody) error {
 	// append(messagesUnderVote, rb.ReqMessage.ReplyToMessage.MessageID)
 	pattern := regexp.MustCompile("-r (.*)")
 	reason := pattern.FindStringSubmatch(rb.ReqMessage.Text)[1]
-	err := CreatePoll(rb.ReqMessage.Chat.ID, fmt.Sprintf("رأی به پاک کردن %s به دلیل: %s", "[inline URL](http://www.example.com/)", reason))
+
+	// check reason is empty or not
+
+	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, fmt.Sprintf("رأی به پاک کردن %s به دلیل: %s", "[inline URL](http://www.example.com/)", reason))
 	// fmt.Sprintf("%d",rb.ReqMessage.ReplyToMessage.MessageID)
-	if err != nil {
+	if err != nil && pollRes == nil {
 		return err
 	}
-	// Pin Poll
-	// err := PinChatMessage();
+	if err := PinChatMessage(pollRes.Result.Chat.ID, pollRes.Result.MessageID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -172,7 +203,15 @@ func DeleteMessage(chatID int64, messageID int64) error {
 	return nil
 }
 
-func CreatePoll(chatID int64, question string) error {
+func printJson(r *io.Reader) {
+	body, err := ioutil.ReadAll(*r)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(body)
+}
+
+func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
 	sendPollReqBody := &SendPollReqBody{
 		ChatID:      chatID,
 		Question:    question,
@@ -182,17 +221,21 @@ func CreatePoll(chatID int64, question string) error {
 
 	sendBody, err := json.Marshal(sendPollReqBody)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	res, err := http.Post(fmt.Sprintf("https://api.telegram.org/bot%s/sendPoll", token), "application/json", bytes.NewBuffer(sendBody))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return errors.New("unexpected error")
+		return nil, errors.New("unexpected error")
+	}
+	resBody := &PollMessageRes{}
+	if err := json.NewDecoder(res.Body).Decode(resBody); err != nil {
+		return nil, err
 	}
 
-	return nil
+	return resBody, nil
 }
 
 func StopPoll(chatID int64, messageID int64) error {
@@ -231,7 +274,7 @@ func PinChatMessage(chatID int64, messageID int64) error {
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
-		return errors.New("unexpected error")
+		return errors.New("1: unexpected error")
 	}
 
 	return nil
@@ -258,13 +301,43 @@ func GetChatMember(chatID int64, userID int64) (*ChatMember, error) {
 	return chatMember, nil
 }
 
+func GetAdmins(chatID int64) ([]User, error) {
+	res, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getChatAdministrators?chat_id=%d", token, chatID))
+	if err != nil {
+		return nil, err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return nil, errors.New("unexpected error")
+	}
+
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	data := map[string][]map[string]interface{}{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+
+	users := []User{}
+	for _, v := range data["result"] {
+		// change v["user"] type to User
+		// users = append(users, v["user"])
+	}
+
+	return users, nil
+}
+
 func Handler(res http.ResponseWriter, req *http.Request) {
 	body := &webhookReqBody{}
 	if err := json.NewDecoder(req.Body).Decode(body); err != nil {
 		fmt.Println("could not decode request body", err)
 		return
 	}
+
+	// printJson(res)
 	fmt.Println(body)
+	// fmt.Println()
 	if !strings.Contains(strings.ToLower(body.ReqMessage.Text), botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
 		return
 	}
