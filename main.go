@@ -19,11 +19,14 @@ import (
 // hyperlink
 // trace polls
 // forward message from specific channel
-// get admin counts
+// get admin counts ######################
+// check message is vote or not
+// creating function to audit polls (global variable)
+// unpin message after completeing poll
 
 // var token = os.Getenv("BotToken")
 // var botID = os.Getenv("BotID")
-// var chanID = os.Getenv("ChatID")
+// var chanID = os.Getenv("ChannelID")
 
 var token = "1635980318:AAE0P8JTY5DSPiFEgOlqGKvO4EWq314dZlA"
 var botID = "@simorgh_consensus_bot"
@@ -131,6 +134,18 @@ type DeleteMessageReqBody struct {
 	MessageID int64 `json:"message_id"`
 }
 
+type Update struct {
+	UpdateID   int64      `json:"update_id"`
+	Poll       Poll       `json:"poll"`
+	PollAnswer PollAnswer `json:"poll_answer"`
+}
+
+type ForwardMessageReqBody struct {
+	ChatID     int64 `json:"chat_id"`
+	FromChatID int64 `json:"from_chat_id"`
+	MessageID  int64 `json:"message_id"`
+}
+
 func ReactionHandler(rb *webhookReqBody) error {
 	voteMatch, err := regexp.MatchString(botID+" delete -r .*", rb.ReqMessage.Text)
 	if err != nil {
@@ -152,6 +167,9 @@ func CreateVote(rb *webhookReqBody) error {
 
 	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, fmt.Sprintf("رأی به پاک کردن %s به دلیل: %s", "[inline URL](http://www.example.com/)", reason))
 	// fmt.Sprintf("%d",rb.ReqMessage.ReplyToMessage.MessageID)
+
+	// add poll_id in global var
+
 	if err != nil && pollRes == nil {
 		return err
 	}
@@ -301,8 +319,36 @@ func GetChatMember(chatID int64, userID int64) (*ChatMember, error) {
 	return chatMember, nil
 }
 
-func GetAdmins(chatID int64) ([]User, error) {
+func GetAdmins(chatID int64) ([]User, error, int) {
 	res, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getChatAdministrators?chat_id=%d", token, chatID))
+	if err != nil {
+		return nil, err, 0
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return nil, errors.New("unexpected error"), 0
+	}
+
+	defer res.Body.Close()
+
+	type Data struct {
+		Result []struct {
+			User User `json:"user"`
+		} `json:"result"`
+	}
+	resBody := &Data{}
+	if err := json.NewDecoder(res.Body).Decode(resBody); err != nil {
+		return nil, err, 0
+	}
+	users := []User{}
+	for _, v := range resBody.Result {
+		users = append(users, v.User)
+	}
+	return users, nil, len(users)
+}
+
+func GetUpdated() (*PollAnswer, error) {
+	res, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getWebhookInfo", token))
 	if err != nil {
 		return nil, err
 	}
@@ -312,32 +358,77 @@ func GetAdmins(chatID int64) ([]User, error) {
 	}
 
 	defer res.Body.Close()
+	pollAnswer := &PollAnswer{}
+	err = json.NewDecoder(res.Body).Decode(pollAnswer)
 
-	body, err := ioutil.ReadAll(res.Body)
-	data := map[string][]map[string]interface{}{}
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err != nil {
 		return nil, err
 	}
+	fmt.Println(pollAnswer)
+	return pollAnswer, nil
+}
 
-	users := []User{}
-	for _, v := range data["result"] {
-		// change v["user"] type to User
-		// users = append(users, v["user"])
+func ForwardMessage(chatID, forwardChetID, messageID int64) error {
+	forwardMessageReqBody := &ForwardMessageReqBody{
+		ChatID:     chatID,
+		FromChatID: forwardChetID,
+		MessageID:  messageID,
 	}
 
-	return users, nil
+	sendBody, err := json.Marshal(forwardMessageReqBody)
+	if err != nil {
+		return err
+	}
+	res, err := http.Post(fmt.Sprintf("https://api.telegram.org/bot%s/forwardMessage", token), "application/json", bytes.NewBuffer(sendBody))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return errors.New("1: unexpected error")
+	}
+
+	return nil
+}
+
+func GetChannelID() (int64, error) {
+	res, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getChat?chat_id=%s", token, chanID))
+	if err != nil {
+		return -1, err
+	}
+	fmt.Println("aksdhjasdh")
+	if res.StatusCode != http.StatusOK {
+		return -1, errors.New("unexpected error")
+	}
+
+	defer res.Body.Close()
+	type Chat struct {
+		Result struct {
+			ID int64 `json:"id"`
+		} `json:"result"`
+	}
+
+	chat := &Chat{}
+	if err := json.NewDecoder(res.Body).Decode(chat); err != nil {
+		return -1, err
+	}
+
+	return chat.Result.ID, nil
 }
 
 func Handler(res http.ResponseWriter, req *http.Request) {
 	body := &webhookReqBody{}
+	fmt.Println(req.Body)
 	if err := json.NewDecoder(req.Body).Decode(body); err != nil {
-		fmt.Println("could not decode request body", err)
+		fmt.Println("1: could not decode request body", err)
 		return
 	}
 
 	// printJson(res)
-	fmt.Println(body)
-	// fmt.Println()
+	// fmt.Println(body)
+	// GetUpdated()
+	
+	// check if message is vote run GetAdmins
+
 	if !strings.Contains(strings.ToLower(body.ReqMessage.Text), botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
 		return
 	}
