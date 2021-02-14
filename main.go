@@ -162,20 +162,33 @@ func CreateVote(rb *webhookReqBody) error {
 	// append(messagesUnderVote, rb.ReqMessage.ReplyToMessage.MessageID)
 	pattern := regexp.MustCompile("-r (.*)")
 	reason := pattern.FindStringSubmatch(rb.ReqMessage.Text)[1]
-
+	fmt.Println("aiksujhdgaiksgdhaikdsjghadskj")
 	// check reason is empty or not
 
-	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, fmt.Sprintf("رأی به پاک کردن %s به دلیل: %s", "[inline URL](http://www.example.com/)", reason))
-	// fmt.Sprintf("%d",rb.ReqMessage.ReplyToMessage.MessageID)
+	// adding note that only send vote on group
+	// adding channel name is description
+	// discution
 
-	// add poll_id in global var
-
+	channelID, err := GetChannelID()
+	if err != nil {
+		return err
+	}
+	msg := fmt.Sprintf(`رأی به پاک کردن %s به دلیل: %s`, `https://t.me/c/1473143652/42`, reason)
+	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, msg)
 	if err != nil && pollRes == nil {
 		return err
 	}
+	// fmt.Sprintf("%d",rb.ReqMessage.ReplyToMessage.MessageID)
+
 	if err := PinChatMessage(pollRes.Result.Chat.ID, pollRes.Result.MessageID); err != nil {
 		return err
 	}
+
+	if err := ForwardMessage(channelID, rb.ReqMessage.Chat.ID, rb.ReqMessage.ReplyToMessage.MessageID); err != nil {
+		return err
+	}
+
+	// add poll_id in global var
 	return nil
 }
 
@@ -246,6 +259,7 @@ func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
+		fmt.Println(res.Status)
 		return nil, errors.New("unexpected error")
 	}
 	resBody := &PollMessageRes{}
@@ -384,6 +398,9 @@ func ForwardMessage(chatID, forwardChetID, messageID int64) error {
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
+		fmt.Println(res.Status)
+		body, _ := ioutil.ReadAll(res.Body)
+		fmt.Println(string(body))
 		return errors.New("1: unexpected error")
 	}
 
@@ -426,7 +443,7 @@ func Handler(res http.ResponseWriter, req *http.Request) {
 	// printJson(res)
 	// fmt.Println(body)
 	// GetUpdated()
-	
+
 	// check if message is vote run GetAdmins
 
 	if !strings.Contains(strings.ToLower(body.ReqMessage.Text), botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
@@ -454,5 +471,8 @@ func Handler(res http.ResponseWriter, req *http.Request) {
 
 func main() {
 	fmt.Println("server is running...")
+
+	// check system variable seted and is valid
+
 	http.ListenAndServe(":3000", http.HandlerFunc(Handler))
 }
