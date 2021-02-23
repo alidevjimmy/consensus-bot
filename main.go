@@ -23,6 +23,7 @@ import (
 // check message is vote or not
 // creating function to audit polls (global variable)
 // unpin message after completeing poll
+// dockerizing
 
 // var token = os.Getenv("BotToken")
 // var botID = os.Getenv("BotID")
@@ -35,6 +36,13 @@ var chanID = "@simorgh_consensus_channel"
 // var messagesUnderVote = []int64{}
 // should be map
 var openPolls = []int64{}
+var polls []PollType
+
+type PollType struct {
+	ID          int64
+	AcceptCount int
+	RejectCount int
+}
 
 type Message struct {
 	MessageID int64  `json:"message_id"`
@@ -173,7 +181,7 @@ func CreateVote(rb *webhookReqBody) error {
 	if err != nil {
 		return err
 	}
-	msg := fmt.Sprintf(`رأی به پاک کردن %s به دلیل: %s`, `https://t.me/c/1473143652/42`, reason)
+	msg := fmt.Sprintf(`رأی به حذف %s به دلیل: %s`, `https://t.me/c/1473143652/42`, reason)
 	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, msg)
 	if err != nil && pollRes == nil {
 		return err
@@ -440,6 +448,8 @@ func Handler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	t, _ := json.Marshal(body)
+	fmt.Println(string(t))
 	// printJson(res)
 	// fmt.Println(body)
 	// GetUpdated()
