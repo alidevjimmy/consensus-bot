@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -18,30 +19,23 @@ import (
 // only admins can vote
 // hyperlink
 // trace polls
-// forward message from specific channel
-// get admin counts ######################
+// forward message to specific channel
 // check message is vote or not
 // creating function to audit polls (global variable)
 // unpin message after completeing poll
 // dockerizing
 
-// var token = os.Getenv("BotToken")
-// var botID = os.Getenv("BotID")
-// var chanID = os.Getenv("ChannelID")
-
-var token = "1635980318:AAE0P8JTY5DSPiFEgOlqGKvO4EWq314dZlA"
-var botID = "@simorgh_consensus_bot"
-var chanID = "@simorgh_consensus_channel"
-
-// var messagesUnderVote = []int64{}
-// should be map
-var openPolls = []int64{}
+var token string
+var botID string
+var port string
+var chanID string
 var polls []PollType
 
 type PollType struct {
 	ID          int64
 	AcceptCount int
 	RejectCount int
+	PinID       int64
 }
 
 type Message struct {
@@ -155,7 +149,7 @@ type ForwardMessageReqBody struct {
 }
 
 func ReactionHandler(rb *webhookReqBody) error {
-	voteMatch, err := regexp.MatchString(botID+" delete -r .*", rb.ReqMessage.Text)
+	voteMatch, err := regexp.MatchString("@"+botID+" delete -r .*", rb.ReqMessage.Text)
 	if err != nil {
 		return err
 	}
@@ -170,8 +164,6 @@ func CreateVote(rb *webhookReqBody) error {
 	// append(messagesUnderVote, rb.ReqMessage.ReplyToMessage.MessageID)
 	pattern := regexp.MustCompile("-r (.*)")
 	reason := pattern.FindStringSubmatch(rb.ReqMessage.Text)[1]
-	fmt.Println("aiksujhdgaiksgdhaikdsjghadskj")
-	// check reason is empty or not
 
 	// adding note that only send vote on group
 	// adding channel name is description
@@ -181,7 +173,7 @@ func CreateVote(rb *webhookReqBody) error {
 	if err != nil {
 		return err
 	}
-	msg := fmt.Sprintf(`رأی به حذف %s به دلیل: %s`, `https://t.me/c/1473143652/42`, reason)
+	msg := fmt.Sprintf(`رأی به حذف %s به دلیل: %s`, `\\[inline URL\\]\\(http://www.example.com/\\)`, reason)
 	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, msg)
 	if err != nil && pollRes == nil {
 		return err
@@ -254,7 +246,7 @@ func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
 	sendPollReqBody := &SendPollReqBody{
 		ChatID:      chatID,
 		Question:    question,
-		Options:     []string{"Accept", "Reject"},
+		Options:     []string{"موافق", "مخالف"},
 		IsAnonymous: false,
 	}
 
@@ -275,6 +267,11 @@ func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
 		return nil, err
 	}
 
+	polls = append(polls, PollType{
+		ID:          resBody.Result.MessageID,
+		AcceptCount: 0,
+		RejectCount: 0,
+	})
 	return resBody, nil
 }
 
@@ -316,7 +313,6 @@ func PinChatMessage(chatID int64, messageID int64) error {
 	if res.StatusCode != http.StatusOK {
 		return errors.New("1: unexpected error")
 	}
-
 	return nil
 }
 
@@ -420,7 +416,6 @@ func GetChannelID() (int64, error) {
 	if err != nil {
 		return -1, err
 	}
-	fmt.Println("aksdhjasdh")
 	if res.StatusCode != http.StatusOK {
 		return -1, errors.New("unexpected error")
 	}
@@ -442,7 +437,6 @@ func GetChannelID() (int64, error) {
 
 func Handler(res http.ResponseWriter, req *http.Request) {
 	body := &webhookReqBody{}
-	fmt.Println(req.Body)
 	if err := json.NewDecoder(req.Body).Decode(body); err != nil {
 		fmt.Println("1: could not decode request body", err)
 		return
@@ -455,34 +449,65 @@ func Handler(res http.ResponseWriter, req *http.Request) {
 	// GetUpdated()
 
 	// check if message is vote run GetAdmins
-
-	if !strings.Contains(strings.ToLower(body.ReqMessage.Text), botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
+	if !strings.Contains(body.ReqMessage.Text, "@"+botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
 		return
 	}
-
 	if body.ReqMessage.From.IsBot {
 		return
 	}
+
 	chatMember, err := GetChatMember(body.ReqMessage.Chat.ID, body.ReqMessage.From.ID)
 
 	if err != nil || chatMember == nil {
 		return
 	}
-
 	if chatMember.Result.Status != "creator" && chatMember.Result.Status != "administrator" {
 		return
 	}
-
 	if err := ReactionHandler(body); err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
 }
 
+func getBot() error {
+	res, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token))
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return errors.New("Error while geting bot information")
+	}
+
+	defer res.Body.Close()
+
+	type Data struct {
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+	resBody := &Data{}
+	if err := json.NewDecoder(res.Body).Decode(resBody); err != nil {
+		return err
+	}
+	botID = resBody.Result.Username
+	return nil
+}
+
+func setEnv() {
+	if len(os.Args) < 4 || len(os.Args) > 4 {
+		log.Fatal("Usage: COMMAND [token] [port] [channelID] note: channel_id should begin with @")
+	}
+	token = os.Args[1]
+	port = os.Args[2]
+	chanID = os.Args[3]
+}
+
 func main() {
+	setEnv()
+	getBot()
 	fmt.Println("server is running...")
 
-	// check system variable seted and is valid
-
-	http.ListenAndServe(":3000", http.HandlerFunc(Handler))
+	http.ListenAndServe(":"+port, http.HandlerFunc(Handler))
 }
