@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 ///******************* Only Admins can use this robot *************************////
@@ -32,10 +34,11 @@ var chanID string
 var polls []PollType
 
 type PollType struct {
-	ID          int64
-	AcceptCount int
-	RejectCount int
-	PinID       int64
+	ID                 int64
+	AcceptCount        int
+	RejectCount        int
+	PinID              int64
+	MessageUnderVoteID int64
 }
 
 type Message struct {
@@ -136,11 +139,11 @@ type DeleteMessageReqBody struct {
 	MessageID int64 `json:"message_id"`
 }
 
-type Update struct {
-	UpdateID   int64      `json:"update_id"`
-	Poll       Poll       `json:"poll"`
-	PollAnswer PollAnswer `json:"poll_answer"`
-}
+// type Update struct {
+// 	UpdateID   int64      `json:"update_id"`
+// 	Poll       Poll       `json:"poll"`
+// 	PollAnswer PollAnswer `json:"poll_answer"`
+// }
 
 type ForwardMessageReqBody struct {
 	ChatID     int64 `json:"chat_id"`
@@ -148,22 +151,22 @@ type ForwardMessageReqBody struct {
 	MessageID  int64 `json:"message_id"`
 }
 
-func ReactionHandler(rb *webhookReqBody) error {
-	voteMatch, err := regexp.MatchString("@"+botID+" delete -r .*", rb.ReqMessage.Text)
+func ReactionHandler(update tgbotapi.Update) error {
+	voteMatch, err := regexp.MatchString("@"+botID+" delete -r .*", update.Message.Text)
 	if err != nil {
 		return err
 	}
 
 	if voteMatch {
-		return CreateVote(rb)
+		return CreateVote(update)
 	}
 	return nil
 }
 
-func CreateVote(rb *webhookReqBody) error {
+func CreateVote(update tgbotapi.Update) error {
 	// append(messagesUnderVote, rb.ReqMessage.ReplyToMessage.MessageID)
 	pattern := regexp.MustCompile("-r (.*)")
-	reason := pattern.FindStringSubmatch(rb.ReqMessage.Text)[1]
+	reason := pattern.FindStringSubmatch(update.Message.Text)[1]
 
 	// adding note that only send vote on group
 	// adding channel name is description
@@ -174,7 +177,7 @@ func CreateVote(rb *webhookReqBody) error {
 		return err
 	}
 	msg := fmt.Sprintf(`رأی به حذف %s به دلیل: %s`, `\\[inline URL\\]\\(http://www.example.com/\\)`, reason)
-	pollRes, err := CreatePoll(rb.ReqMessage.Chat.ID, msg)
+	pollRes, err := CreatePoll(update.Message.Chat.ID, int64(update.Message.ReplyToMessage.MessageID), msg)
 	if err != nil && pollRes == nil {
 		return err
 	}
@@ -184,7 +187,7 @@ func CreateVote(rb *webhookReqBody) error {
 		return err
 	}
 
-	if err := ForwardMessage(channelID, rb.ReqMessage.Chat.ID, rb.ReqMessage.ReplyToMessage.MessageID); err != nil {
+	if err := ForwardMessage(channelID, update.Message.Chat.ID, int64(update.Message.ReplyToMessage.MessageID)); err != nil {
 		return err
 	}
 
@@ -242,7 +245,7 @@ func printJson(r *io.Reader) {
 	fmt.Println(body)
 }
 
-func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
+func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, error) {
 	sendPollReqBody := &SendPollReqBody{
 		ChatID:      chatID,
 		Question:    question,
@@ -268,9 +271,10 @@ func CreatePoll(chatID int64, question string) (*PollMessageRes, error) {
 	}
 
 	polls = append(polls, PollType{
-		ID:          resBody.Result.MessageID,
-		AcceptCount: 0,
-		RejectCount: 0,
+		ID:                 resBody.Result.MessageID,
+		AcceptCount:        0,
+		RejectCount:        0,
+		MessageUnderVoteID: messageID,
 	})
 	return resBody, nil
 }
@@ -435,28 +439,23 @@ func GetChannelID() (int64, error) {
 	return chat.Result.ID, nil
 }
 
-func Handler(res http.ResponseWriter, req *http.Request) {
-	body := &webhookReqBody{}
-	if err := json.NewDecoder(req.Body).Decode(body); err != nil {
-		fmt.Println("1: could not decode request body", err)
-		return
-	}
-
-	t, _ := json.Marshal(body)
-	fmt.Println(string(t))
-	// printJson(res)
-	// fmt.Println(body)
-	// GetUpdated()
+// Handler handle incoming messages
+func Handler(update tgbotapi.Update) {
 
 	// check if message is vote run GetAdmins
-	if !strings.Contains(body.ReqMessage.Text, "@"+botID) || reflect.ValueOf(body.ReqMessage.ReplyToMessage).IsZero() {
+	if !reflect.ValueOf(update.PollAnswer).IsZero() {
+		// ha ha
+	}
+
+	if !strings.Contains(update.Message.Text, "@"+botID) || reflect.ValueOf(update.Message.ReplyToMessage).IsZero() {
 		return
 	}
-	if body.ReqMessage.From.IsBot {
+	if update.Message.From.IsBot {
 		return
 	}
 
-	chatMember, err := GetChatMember(body.ReqMessage.Chat.ID, body.ReqMessage.From.ID)
+	// thanks to vsCode :)
+	chatMember, err := GetChatMember(update.Message.Chat.ID, int64(update.Message.From.ID))
 
 	if err != nil || chatMember == nil {
 		return
@@ -464,7 +463,7 @@ func Handler(res http.ResponseWriter, req *http.Request) {
 	if chatMember.Result.Status != "creator" && chatMember.Result.Status != "administrator" {
 		return
 	}
-	if err := ReactionHandler(body); err != nil {
+	if err := ReactionHandler(update); err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
@@ -507,7 +506,28 @@ func setEnv() {
 func main() {
 	setEnv()
 	getBot()
-	fmt.Println("server is running...")
+	// fmt.Println("server is running...")
+	// http.ListenAndServe(":"+port, http.HandlerFunc(Handler))
+	bot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		log.Panic(err)
+	}
 
-	http.ListenAndServe(":"+port, http.HandlerFunc(Handler))
+	bot.Debug = true
+
+	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	updates, err := bot.GetUpdatesChan(u)
+
+	for update := range updates {
+		if update.Message == nil { // ignore any non-Message Updates
+			continue
+		}
+
+		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+		Handler(update)
+	}
 }
