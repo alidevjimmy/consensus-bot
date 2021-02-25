@@ -12,32 +12,24 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-///******************* Only Admins can use this robot *************************////
-// only admins can vote
 // hyperlink
-// trace polls
-// forward message to specific channel
-// check message is vote or not
-// creating function to audit polls (global variable)
-// unpin message after completeing poll
 // dockerizing
 
 var token string
 var botID string
 var port string
 var chanID string
-var polls []PollType
+var polls = make(map[string]*PollType)
 
 type PollType struct {
-	ID                 int64
 	AcceptCount        int
 	RejectCount        int
-	PinID              int64
 	MessageUnderVoteID int64
 }
 
@@ -79,10 +71,11 @@ type PollAnswer struct {
 }
 
 type SendPollReqBody struct {
-	ChatID      int64    `json:"chat_id"`
-	Question    string   `json:"question"`
-	Options     []string `json:"options"`
-	IsAnonymous bool     `json:"is_anonymous"`
+	ChatID               int64    `json:"chat_id"`
+	Question             string   `json:"question"`
+	Options              []string `json:"options"`
+	IsAnonymous          bool     `json:"is_anonymous"`
+	ExplanationParseMode string   `json:"explanation_parse_mode"`
 }
 
 type StopPollReqBody struct {
@@ -106,7 +99,8 @@ type ChatMember struct {
 type PollMessageRes struct {
 	Ok     bool `json:"ok"`
 	Result struct {
-		MessageID int64 `json:"message_id"`
+		ID        string `json:"id"`
+		MessageID int64  `json:"message_id"`
 		Chat      struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
@@ -137,6 +131,10 @@ type GetChatMemberReq struct {
 type DeleteMessageReqBody struct {
 	ChatID    int64 `json:"chat_id"`
 	MessageID int64 `json:"message_id"`
+}
+type DeletePollReqBody struct {
+	ChatID    int64  `json:"chat_id"`
+	MessageID string `json:"message_id"`
 }
 
 // type Update struct {
@@ -176,7 +174,7 @@ func CreateVote(update tgbotapi.Update) error {
 	if err != nil {
 		return err
 	}
-	msg := fmt.Sprintf(`رأی به حذف %s به دلیل: %s`, `\\[inline URL\\]\\(http://www.example.com/\\)`, reason)
+	msg := fmt.Sprintf("رأی به حذف " + tgbotapi.EscapeText(tgbotapi.ModeMarkdownV2, "[inline URL](http://www.example.com/)") + "به دلیل: " + reason)
 	pollRes, err := CreatePoll(update.Message.Chat.ID, int64(update.Message.ReplyToMessage.MessageID), msg)
 	if err != nil && pollRes == nil {
 		return err
@@ -231,7 +229,28 @@ func DeleteMessage(chatID int64, messageID int64) error {
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
-		return errors.New("unexpected error")
+		return errors.New("error while delete message")
+	}
+
+	return nil
+}
+
+func DeletePoll(chatID int64, pollID string) error {
+	deletePollReqBody := &DeletePollReqBody{
+		ChatID:    chatID,
+		MessageID: pollID,
+	}
+
+	sendBody, err := json.Marshal(deletePollReqBody)
+	if err != nil {
+		return err
+	}
+	res, err := http.Post(fmt.Sprintf("https://api.telegram.org/bot%s/deleteMessage", token), "application/json", bytes.NewBuffer(sendBody))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return errors.New("error while delete poll")
 	}
 
 	return nil
@@ -247,10 +266,11 @@ func printJson(r *io.Reader) {
 
 func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, error) {
 	sendPollReqBody := &SendPollReqBody{
-		ChatID:      chatID,
-		Question:    question,
-		Options:     []string{"موافق", "مخالف"},
-		IsAnonymous: false,
+		ChatID:               chatID,
+		Question:             question,
+		Options:              []string{"موافق", "مخالف"},
+		IsAnonymous:          false,
+		ExplanationParseMode: "MarkdownV2",
 	}
 
 	sendBody, err := json.Marshal(sendPollReqBody)
@@ -270,12 +290,12 @@ func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, erro
 		return nil, err
 	}
 
-	polls = append(polls, PollType{
-		ID:                 resBody.Result.MessageID,
+	polls[strconv.Itoa(int(resBody.Result.MessageID))] = &PollType{
 		AcceptCount:        0,
 		RejectCount:        0,
 		MessageUnderVoteID: messageID,
-	})
+	}
+
 	return resBody, nil
 }
 
@@ -300,7 +320,7 @@ func StopPoll(chatID int64, messageID int64) error {
 	return nil
 }
 
-func PinChatMessage(chatID int64, messageID int64) error {
+func PinChatMessage(chatID, messageID int64) error {
 	pinReqBody := &PinMessageReq{
 		ChatID:    chatID,
 		MessageID: messageID,
@@ -316,6 +336,25 @@ func PinChatMessage(chatID int64, messageID int64) error {
 	}
 	if res.StatusCode != http.StatusOK {
 		return errors.New("1: unexpected error")
+	}
+	return nil
+}
+func UnPinChatMessage(chatID, messageID int64) error {
+	pinReqBody := &PinMessageReq{
+		ChatID:    chatID,
+		MessageID: messageID,
+	}
+
+	sendBody, err := json.Marshal(pinReqBody)
+	if err != nil {
+		return err
+	}
+	res, err := http.Post(fmt.Sprintf("https://api.telegram.org/bot%s/unpinChatMessage", token), "application/json", bytes.NewBuffer(sendBody))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return errors.New("error while unpin message")
 	}
 	return nil
 }
@@ -441,10 +480,45 @@ func GetChannelID() (int64, error) {
 
 // Handler handle incoming messages
 func Handler(update tgbotapi.Update) {
-
-	// check if message is vote run GetAdmins
 	if !reflect.ValueOf(update.PollAnswer).IsZero() {
-		// ha ha
+		if _, exists := polls[update.PollAnswer.PollID]; !exists {
+			return
+		}
+		admins, err, count := GetAdmins(update.Message.Chat.ID)
+		if err != nil {
+			fmt.Println("Error: ", err)
+			return
+		}
+		isAdmin := false
+		for _, v := range admins {
+			if v.ID == int64(update.PollAnswer.User.ID) {
+				isAdmin = true
+			}
+		}
+		if !isAdmin {
+			return
+		}
+		// increase poll vote counts
+		if update.PollAnswer.OptionIds[0] == 0 {
+			polls[update.PollAnswer.PollID].AcceptCount++
+		} else if update.PollAnswer.OptionIds[0] == 1 {
+			polls[update.PollAnswer.PollID].RejectCount++
+
+		}
+		// check poll is completed or not
+		isAcceptedOrRejected := false
+		if polls[update.PollAnswer.PollID].AcceptCount >= int(count/3) {
+			isAcceptedOrRejected = true
+			DeleteMessage(update.Message.Chat.ID, polls[update.PollAnswer.PollID].MessageUnderVoteID)
+		} else if polls[update.PollAnswer.PollID].AcceptCount >= int(count/3) {
+			isAcceptedOrRejected = true
+		}
+		if isAcceptedOrRejected {
+			delete(polls, update.PollAnswer.PollID)
+			UnPinChatMessage(update.Message.Chat.ID, polls[update.PollAnswer.PollID].MessageUnderVoteID)
+			DeletePoll(update.Message.Chat.ID, update.PollAnswer.PollID)
+			// actualy remove key from map and also delete poll and pin
+		}
 	}
 
 	if !strings.Contains(update.Message.Text, "@"+botID) || reflect.ValueOf(update.Message.ReplyToMessage).IsZero() {
@@ -495,26 +569,23 @@ func getBot() error {
 }
 
 func setEnv() {
-	if len(os.Args) < 4 || len(os.Args) > 4 {
-		log.Fatal("Usage: COMMAND [token] [port] [channelID] note: channel_id should begin with @")
+	if len(os.Args) < 3 || len(os.Args) > 3 {
+		log.Fatal("Usage: COMMAND [token] [channelID] note: channel_id should begin with @")
 	}
 	token = os.Args[1]
-	port = os.Args[2]
-	chanID = os.Args[3]
+	chanID = os.Args[2]
 }
 
 func main() {
 	setEnv()
 	getBot()
-	// fmt.Println("server is running...")
-	// http.ListenAndServe(":"+port, http.HandlerFunc(Handler))
+
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Panic(err)
 	}
 
 	bot.Debug = true
-
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
@@ -523,11 +594,10 @@ func main() {
 	updates, err := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil { // ignore any non-Message Updates
+		if update.Message == nil {
 			continue
 		}
 
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 		Handler(update)
 	}
 }
