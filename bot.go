@@ -8,11 +8,11 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
@@ -31,6 +31,8 @@ type PollType struct {
 	AcceptCount        int
 	RejectCount        int
 	MessageUnderVoteID int64
+	ChatID             int64
+	PollMessageID      int64
 }
 
 type Message struct {
@@ -99,12 +101,12 @@ type ChatMember struct {
 type PollMessageRes struct {
 	Ok     bool `json:"ok"`
 	Result struct {
-		ID        string `json:"id"`
-		MessageID int64  `json:"message_id"`
+		MessageID int64 `json:"message_id"`
 		Chat      struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
 		User User `json:"from"`
+		Poll Poll `json:"poll"`
 	} `json:"result"`
 }
 
@@ -133,8 +135,8 @@ type DeleteMessageReqBody struct {
 	MessageID int64 `json:"message_id"`
 }
 type DeletePollReqBody struct {
-	ChatID    int64  `json:"chat_id"`
-	MessageID string `json:"message_id"`
+	ChatID    int64 `json:"chat_id"`
+	MessageID int64 `json:"message_id"`
 }
 
 // type Update struct {
@@ -179,7 +181,6 @@ func CreateVote(update tgbotapi.Update) error {
 	if err != nil && pollRes == nil {
 		return err
 	}
-	// fmt.Sprintf("%d",rb.ReqMessage.ReplyToMessage.MessageID)
 
 	if err := PinChatMessage(pollRes.Result.Chat.ID, pollRes.Result.MessageID); err != nil {
 		return err
@@ -189,7 +190,6 @@ func CreateVote(update tgbotapi.Update) error {
 		return err
 	}
 
-	// add poll_id in global var
 	return nil
 }
 
@@ -235,7 +235,7 @@ func DeleteMessage(chatID int64, messageID int64) error {
 	return nil
 }
 
-func DeletePoll(chatID int64, pollID string) error {
+func DeletePoll(chatID, pollID int64) error {
 	deletePollReqBody := &DeletePollReqBody{
 		ChatID:    chatID,
 		MessageID: pollID,
@@ -283,19 +283,20 @@ func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, erro
 	}
 	if res.StatusCode != http.StatusOK {
 		fmt.Println(res.Status)
-		return nil, errors.New("unexpected error")
+		return nil, errors.New("unexpected error while creating poll")
 	}
 	resBody := &PollMessageRes{}
 	if err := json.NewDecoder(res.Body).Decode(resBody); err != nil {
 		return nil, err
 	}
 
-	polls[strconv.Itoa(int(resBody.Result.MessageID))] = &PollType{
+	polls[resBody.Result.Poll.ID] = &PollType{
 		AcceptCount:        0,
 		RejectCount:        0,
 		MessageUnderVoteID: messageID,
+		ChatID:             chatID,
+		PollMessageID:      resBody.Result.MessageID,
 	}
-
 	return resBody, nil
 }
 
@@ -335,7 +336,7 @@ func PinChatMessage(chatID, messageID int64) error {
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
-		return errors.New("1: unexpected error")
+		return errors.New("1: unexpected error while pin message")
 	}
 	return nil
 }
@@ -387,12 +388,13 @@ func GetAdmins(chatID int64) ([]User, error, int) {
 	}
 
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("unexpected error"), 0
+		return nil, errors.New("unexpected error while geting admins data"), 0
 	}
 
 	defer res.Body.Close()
 
 	type Data struct {
+		Ok     bool `json:"ok"`
 		Result []struct {
 			User User `json:"user"`
 		} `json:"result"`
@@ -400,6 +402,9 @@ func GetAdmins(chatID int64) ([]User, error, int) {
 	resBody := &Data{}
 	if err := json.NewDecoder(res.Body).Decode(resBody); err != nil {
 		return nil, err, 0
+	}
+	if !resBody.Ok {
+		return nil, errors.New("cannot get admins"), 0
 	}
 	users := []User{}
 	for _, v := range resBody.Result {
@@ -415,7 +420,7 @@ func GetUpdated() (*PollAnswer, error) {
 	}
 
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("unexpected error")
+		return nil, errors.New("unexpected error while getting updates")
 	}
 
 	defer res.Body.Close()
@@ -448,7 +453,7 @@ func ForwardMessage(chatID, forwardChetID, messageID int64) error {
 		fmt.Println(res.Status)
 		body, _ := ioutil.ReadAll(res.Body)
 		fmt.Println(string(body))
-		return errors.New("1: unexpected error")
+		return errors.New("1: unexpected error while forward message")
 	}
 
 	return nil
@@ -460,7 +465,7 @@ func GetChannelID() (int64, error) {
 		return -1, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return -1, errors.New("unexpected error")
+		return -1, errors.New("unexpected error while getting channel id")
 	}
 
 	defer res.Body.Close()
@@ -484,15 +489,16 @@ func Handler(update tgbotapi.Update) {
 		if _, exists := polls[update.PollAnswer.PollID]; !exists {
 			return
 		}
-		admins, err, count := GetAdmins(update.Message.Chat.ID)
-		if err != nil {
-			fmt.Println("Error: ", err)
+		admins, err, count := GetAdmins(polls[update.PollAnswer.PollID].ChatID)
+		if err != nil || len(admins) <= 0 || count <= 0 {
+			fmt.Println("Error: ", "error in getting admins proccess", err, len(admins), count)
 			return
 		}
 		isAdmin := false
 		for _, v := range admins {
 			if v.ID == int64(update.PollAnswer.User.ID) {
 				isAdmin = true
+				break
 			}
 		}
 		if !isAdmin {
@@ -507,18 +513,17 @@ func Handler(update tgbotapi.Update) {
 		}
 		// check poll is completed or not
 		isAcceptedOrRejected := false
-		if polls[update.PollAnswer.PollID].AcceptCount >= int(count/3) {
+		if polls[update.PollAnswer.PollID].AcceptCount >= int(math.Ceil(float64(count)/3)) {
 			isAcceptedOrRejected = true
-			DeleteMessage(update.Message.Chat.ID, polls[update.PollAnswer.PollID].MessageUnderVoteID)
-		} else if polls[update.PollAnswer.PollID].AcceptCount >= int(count/3) {
+			DeleteMessage(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].MessageUnderVoteID)
+		} else if polls[update.PollAnswer.PollID].RejectCount >= int(math.Ceil(float64(count)/3)) {
 			isAcceptedOrRejected = true
 		}
 		if isAcceptedOrRejected {
-			delete(polls, update.PollAnswer.PollID)
-			UnPinChatMessage(update.Message.Chat.ID, polls[update.PollAnswer.PollID].MessageUnderVoteID)
-			DeletePoll(update.Message.Chat.ID, update.PollAnswer.PollID)
-			// actualy remove key from map and also delete poll and pin
+			UnPinChatMessage(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].PollMessageID)
+			DeletePoll(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].PollMessageID)
 		}
+		return
 	}
 
 	if !strings.Contains(update.Message.Text, "@"+botID) || reflect.ValueOf(update.Message.ReplyToMessage).IsZero() {
@@ -594,7 +599,7 @@ func main() {
 	updates, err := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil {
+		if update.Message == nil && update.PollAnswer == nil {
 			continue
 		}
 
