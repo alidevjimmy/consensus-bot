@@ -33,6 +33,7 @@ type PollType struct {
 	MessageUnderVoteID int64
 	ChatID             int64
 	PollMessageID      int64
+	ReqMessageID       int64
 }
 
 type Message struct {
@@ -78,6 +79,7 @@ type SendPollReqBody struct {
 	Options              []string `json:"options"`
 	IsAnonymous          bool     `json:"is_anonymous"`
 	ExplanationParseMode string   `json:"explanation_parse_mode"`
+	ReplyToMessageID     int      `json:"reply_to_message_id"`
 }
 
 type StopPollReqBody struct {
@@ -118,6 +120,7 @@ type sendMessageReqBody struct {
 	ChatID           int64  `json:"chat_id"`
 	Text             string `json:"text"`
 	ReplyToMessageID int64  `json:"reply_to_message_id"`
+	ParseMode        string `json:"parse_mode"`
 }
 
 type PinMessageReq struct {
@@ -176,8 +179,8 @@ func CreateVote(update tgbotapi.Update) error {
 	if err != nil {
 		return err
 	}
-	msg := fmt.Sprintf("رأی به حذف " + tgbotapi.EscapeText(tgbotapi.ModeMarkdownV2, "[inline URL](http://www.example.com/)") + "به دلیل: " + reason)
-	pollRes, err := CreatePoll(update.Message.Chat.ID, int64(update.Message.ReplyToMessage.MessageID), msg)
+	msg := fmt.Sprintf("رأی به حذف پیام ریپلای شده " + "به دلیل: " + reason + fmt.Sprintf("\n\n\n\nبحث و گفتوگو‌: %s", chanID))
+	pollRes, err := CreatePoll(update.Message.Chat.ID, int64(update.Message.ReplyToMessage.MessageID), int64(update.Message.MessageID), msg)
 	if err != nil && pollRes == nil {
 		return err
 	}
@@ -198,6 +201,7 @@ func SendMessage(chatID int64, text string, replyToMessageID int64) error {
 		ChatID:           chatID,
 		Text:             text,
 		ReplyToMessageID: replyToMessageID,
+		ParseMode:        "MarkdownV2",
 	}
 
 	sendBody, err := json.Marshal(reqBody)
@@ -264,13 +268,14 @@ func printJson(r *io.Reader) {
 	fmt.Println(body)
 }
 
-func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, error) {
+func CreatePoll(chatID, messageID, reqMessageID int64, question string) (*PollMessageRes, error) {
 	sendPollReqBody := &SendPollReqBody{
 		ChatID:               chatID,
 		Question:             question,
 		Options:              []string{"موافق", "مخالف"},
 		IsAnonymous:          false,
 		ExplanationParseMode: "MarkdownV2",
+		ReplyToMessageID:     int(messageID),
 	}
 
 	sendBody, err := json.Marshal(sendPollReqBody)
@@ -296,6 +301,7 @@ func CreatePoll(chatID, messageID int64, question string) (*PollMessageRes, erro
 		MessageUnderVoteID: messageID,
 		ChatID:             chatID,
 		PollMessageID:      resBody.Result.MessageID,
+		ReqMessageID:       reqMessageID,
 	}
 	return resBody, nil
 }
@@ -522,6 +528,8 @@ func Handler(update tgbotapi.Update) {
 		if isAcceptedOrRejected {
 			UnPinChatMessage(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].PollMessageID)
 			DeletePoll(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].PollMessageID)
+			DeleteMessage(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].ReqMessageID)
+			DeleteMessage(polls[update.PollAnswer.PollID].ChatID, polls[update.PollAnswer.PollID].PollMessageID + 1)
 		}
 		return
 	}
